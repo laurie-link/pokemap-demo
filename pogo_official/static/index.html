@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pokémon GO Map</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">GO</span>
+        <div>
+          <div class="title">Pokémon GO 官方地图</div>
+          <div class="subtitle" id="status">Campfire 公开接口 · 与 pokemongo.com/map 同一套筛选</div>
+        </div>
+      </div>
+    </header>
+
+    <div class="toolbar">
+      <label class="field grow">
+        <span>经纬度</span>
+        <input id="coords" type="text" spellcheck="false" autocomplete="off"
+               placeholder="纬度, 经度  例如 34.6664, 135.5006"
+               value="34.6664, 135.5006" />
+      </label>
+      <label class="field radius">
+        <span>半径 (米)</span>
+        <input id="radius" type="text" spellcheck="false" value="800" />
+      </label>
+      <label class="field">
+        <span>范围</span>
+        <select id="region">
+          <option value="bbox">矩形</option>
+          <option value="circle" selected>圆形</option>
+        </select>
+      </label>
+      <button type="button" class="primary" id="btn-search">查询</button>
+    </div>
+
+    <div class="stats" id="filters">
+      <label class="chip raid">
+        <input type="checkbox" id="f-raid" checked />
+        <span class="chip-ico raid"></span>
+        <b id="n-raid">—</b>
+        <span>Raids</span>
+      </label>
+      <label class="chip mega">
+        <input type="checkbox" id="f-mega" checked />
+        <span class="chip-ico mega"></span>
+        <b id="n-mega">—</b>
+        <span>Super Mega Raids</span>
+      </label>
+      <label class="chip event">
+        <input type="checkbox" id="f-event" checked />
+        <span class="chip-ico event"></span>
+        <b id="n-event">—</b>
+        <span>Events &amp; Meetups</span>
+      </label>
+      <label class="chip gmax">
+        <input type="checkbox" id="f-gmax" checked />
+        <span class="chip-ico gmax"></span>
+        <b id="n-gmax">—</b>
+        <span>G-Max</span>
+      </label>
+      <label class="chip dmax">
+        <input type="checkbox" id="f-dmax" checked />
+        <span class="chip-ico dmax"></span>
+        <b id="n-dmax">—</b>
+        <span>D-Max</span>
+      </label>
+      <label class="chip power">
+        <input type="checkbox" id="f-power" checked />
+        <img class="stat-icon" src="/icons/powerspot.png" alt="" />
+        <b id="n-power">—</b>
+        <span>Power Spot</span>
+      </label>
+      <label class="chip gym">
+        <input type="checkbox" id="f-gym" checked />
+        <img class="stat-icon gym" src="/icons/gym.png" alt="" />
+        <b id="n-gym">—</b>
+        <span>Gyms</span>
+      </label>
+      <label class="chip route">
+        <input type="checkbox" id="f-route" checked />
+        <span class="chip-ico route"></span>
+        <b id="n-route">—</b>
+        <span>Routes</span>
+      </label>
+      <label class="chip stop">
+        <input type="checkbox" id="f-stop" checked />
+        <img class="stat-icon" src="/icons/pokestop.png" alt="" />
+        <b id="n-stop">—</b>
+        <span>PokéStops</span>
+      </label>
+      <div class="stat total"><b id="n-total">—</b><span>显示中</span></div>
+      <div class="hint" id="hint">数据来自 pokemongo.com/map 同一套 Campfire 接口。</div>
+    </div>
+
+    <div id="map"></div>
+    <div class="busy" id="busy" hidden><div class="spinner"></div><span id="busy-text">查询中…</span></div>
+  </div>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
