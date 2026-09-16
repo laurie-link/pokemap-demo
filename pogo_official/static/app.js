@@ -270,10 +270,26 @@ async function call(name, ...args) {
   return a[name](...args);
 }
 
+function selectedDropTypes() {
+  const types = [];
+  if ($("f-stop").checked) types.push("PGO_POKESTOP");
+  if ($("f-gym").checked || $("f-raid").checked || $("f-mega").checked) types.push("PGO_GYM");
+  if ($("f-power").checked || $("f-gmax").checked || $("f-dmax").checked) types.push("PGO_POWERSPOT");
+  if ($("f-route").checked) types.push("PGO_ROUTE");
+  if ($("f-event").checked) types.push("CA_EVENT");
+  return types;
+}
+
 async function search() {
   setBusy(true, "正在请求官方地图…");
   try {
-    const res = await call("search", $("coords").value, $("radius").value, $("region").value);
+    const res = await call(
+      "search",
+      $("coords").value,
+      $("radius").value,
+      $("region").value,
+      selectedDropTypes()
+    );
     if (!res.ok) throw new Error(res.error || "查询失败");
     renderResult(res);
   } catch (err) {

@@ -5,7 +5,7 @@ import subprocess
 import sys
 from typing import Any
 
-from pogo_official.client import OfficialMapClient, OfficialMapError, count_entities
+from pogo_official.client import DROP_TYPES, OfficialMapClient, OfficialMapError, count_entities
 from pogo_official.server import app_url, ensure_server
 from pogo_official.geo import bbox_from_radius, parse_lat_lng
 
@@ -37,15 +37,23 @@ class DesktopApi:
     def get_clipboard(self) -> str:
         return _clipboard_text()
 
-    def search(self, coords: str, radius: str, region: str) -> dict[str, Any]:
+    def search(self, coords: str, radius: str, region: str, types: Any = None) -> dict[str, Any]:
         try:
             lat, lng = parse_lat_lng(coords)
             radius_m = float(str(radius).strip())
         except (TypeError, ValueError) as exc:
             return {"ok": False, "error": str(exc)}
         circular = region == "circle"
+        allowed = set(DROP_TYPES) | {"EVENT"}
+        drop_types = None
+        if types:
+            cleaned = tuple(str(item) for item in types if str(item) in allowed)
+            if cleaned:
+                drop_types = cleaned
         try:
-            pois = self._client.nearby(lat, lng, radius_m, circular_filter=circular)
+            pois = self._client.nearby(
+                lat, lng, radius_m, circular_filter=circular, drop_types=drop_types
+            )
         except OfficialMapError as exc:
             return {"ok": False, "error": str(exc)}
         except Exception as exc:

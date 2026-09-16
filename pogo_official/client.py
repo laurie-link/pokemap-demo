@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 import time
 from typing import Any, Optional
 
@@ -16,9 +18,10 @@ SOURCE_NAME = "PGO"
 DEFAULT_CELL_LEVEL = 16
 CHUNK_SIZE = 12
 POWERSPOT_CHUNK_SIZE = 12
+CHUNK_WORKERS = 8
 MAX_RETRIES = 2
-RETRY_BACKOFF_S = 0.35
-POWERSPOT_EMPTY_RETRIES = 2
+RETRY_BACKOFF_S = 0.25
+POWERSPOT_EMPTY_RETRIES = 0
 EVENT_CELL_LEVEL = 12
 TRANSIENT_MARKERS = (
     "HTTP Mapping: 400",
@@ -308,6 +311,7 @@ def _sources_for(drop_types: tuple[str, ...]) -> list[dict[str, Any]]:
 class OfficialMapClient:
     def __init__(self, *, timeout_s: float = 60.0) -> None:
         self.timeout_s = timeout_s
+        self._local = threading.local()
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -320,8 +324,16 @@ class OfficialMapClient:
             }
         )
 
+    def _http(self) -> requests.Session:
+        session = getattr(self._local, "session", None)
+        if session is None:
+            session = requests.Session()
+            session.headers.update(self.session.headers)
+            self._local.session = session
+        return session
+
     def _post_once(self, variables: dict[str, Any], *, query: str = MAP_QUERY) -> dict[str, Any]:
-        res = self.session.post(
+        res = self._http().post(
             GRAPHQL_URL,
             json={"query": query, "variables": variables},
             timeout=self.timeout_s,
@@ -425,18 +437,28 @@ class OfficialMapClient:
         out: list[dict[str, Any]] = []
         seen: set[str] = set()
         size = max(1, chunk_size)
-        for i in range(0, len(cell_ids), size):
-            chunk = cell_ids[i : i + size]
-            for poi in self._fetch_chunk_split(
-                chunk, cell_level=cell_level, drop_types=drop_types, query=query
-            ):
-                oid = poi.get("id")
-                if not oid or oid in seen:
-                    continue
-                seen.add(str(oid))
-                out.append(poi)
-            if i + size < len(cell_ids):
-                time.sleep(0.05)
+        chunks = [cell_ids[i : i + size] for i in range(0, len(cell_ids), size)]
+        if not chunks:
+            return []
+        workers = min(CHUNK_WORKERS, len(chunks))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [
+                pool.submit(
+                    self._fetch_chunk_split,
+                    chunk,
+                    cell_level=cell_level,
+                    drop_types=drop_types,
+                    query=query,
+                )
+                for chunk in chunks
+            ]
+            for fut in as_completed(futures):
+                for poi in fut.result():
+                    oid = poi.get("id")
+                    if not oid or oid in seen:
+                        continue
+                    seen.add(str(oid))
+                    out.append(poi)
         return out
 
     def _fetch_powerspots(
@@ -483,20 +505,20 @@ class OfficialMapClient:
         # Routes, and Events must not ride along with the dense gym/stop GMO
         # call or they get dropped.
         wanted = set(drop_types)
-        pois: list[dict[str, Any]] = []
+        jobs: list[tuple] = []
         if "PGO_POWERSPOT" in wanted:
-            pois = self._merge_unique(
-                pois, self._fetch_powerspots(cell_ids, cell_level=cell_level)
-            )
+            jobs.append(("power", lambda: self._fetch_powerspots(cell_ids, cell_level=cell_level)))
         if "PGO_ROUTE" in wanted:
-            pois = self._merge_unique(
-                pois,
-                self._fetch_cells_once(
-                    cell_ids,
-                    cell_level=cell_level,
-                    drop_types=ROUTE_TYPES,
-                    chunk_size=ROUTE_CHUNK_SIZE,
-                ),
+            jobs.append(
+                (
+                    "route",
+                    lambda: self._fetch_cells_once(
+                        cell_ids,
+                        cell_level=cell_level,
+                        drop_types=ROUTE_TYPES,
+                        chunk_size=ROUTE_CHUNK_SIZE,
+                    ),
+                )
             )
         others = tuple(
             drop
@@ -504,28 +526,33 @@ class OfficialMapClient:
             if drop not in {"PGO_POWERSPOT", "PGO_ROUTE", "CA_EVENT", "EVENT"}
         )
         if others:
-            pois = self._merge_unique(
-                pois,
-                self._fetch_cells_once(
-                    cell_ids, cell_level=cell_level, drop_types=others
-                ),
+            jobs.append(
+                (
+                    "gym_stop",
+                    lambda: self._fetch_cells_once(
+                        cell_ids, cell_level=cell_level, drop_types=others
+                    ),
+                )
             )
         if "CA_EVENT" in wanted or "EVENT" in wanted:
-            pois = self._merge_unique(
-                pois,
-                self._fetch_cells_once(
-                    cell_ids,
-                    cell_level=cell_level,
-                    drop_types=EVENT_TYPES,
-                    chunk_size=EVENT_CHUNK_SIZE,
-                ),
+            jobs.append(
+                (
+                    "event",
+                    lambda: self._fetch_cells_once(
+                        cell_ids,
+                        cell_level=cell_level,
+                        drop_types=EVENT_TYPES,
+                        chunk_size=EVENT_CHUNK_SIZE,
+                    ),
+                )
             )
-        if "PGO_POWERSPOT" in wanted and not any(
-            poi.get("entity") == "POWERSPOT" for poi in pois
-        ):
-            pois = self._merge_unique(
-                pois, self._fetch_powerspots(cell_ids, cell_level=cell_level)
-            )
+        pois: list[dict[str, Any]] = []
+        if not jobs:
+            return pois
+        with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+            futures = [pool.submit(fn) for _, fn in jobs]
+            for fut in as_completed(futures):
+                pois = self._merge_unique(pois, fut.result())
         return pois
 
     def nearby(
@@ -536,24 +563,37 @@ class OfficialMapClient:
         *,
         circular_filter: bool = False,
         cell_level: int = DEFAULT_CELL_LEVEL,
+        drop_types: Optional[tuple[str, ...]] = None,
     ) -> list[dict[str, Any]]:
+        wanted = tuple(drop_types) if drop_types else DROP_TYPES
         cells = cover_radius(lat, lng, radius_m, cell_level)
         if not cells:
             return []
-        poi_types = tuple(
-            drop for drop in DROP_TYPES if drop not in {"CA_EVENT", "EVENT"}
+        poi_types = tuple(drop for drop in wanted if drop not in {"CA_EVENT", "EVENT"})
+        event_wanted = any(drop in wanted for drop in ("CA_EVENT", "EVENT"))
+        event_cells = (
+            cover_radius(lat, lng, radius_m, EVENT_CELL_LEVEL, extra_ring=1)
+            if event_wanted
+            else []
         )
-        pois = self.fetch_cells(cells, cell_level=cell_level, drop_types=poi_types)
-        event_cells = cover_radius(
-            lat, lng, radius_m, EVENT_CELL_LEVEL, extra_ring=1
-        )
-        if event_cells:
-            pois = self._merge_unique(
-                pois,
-                self.fetch_cells(
-                    event_cells, cell_level=EVENT_CELL_LEVEL, drop_types=EVENT_TYPES
-                ),
+        jobs = []
+        if poi_types:
+            jobs.append(
+                lambda: self.fetch_cells(cells, cell_level=cell_level, drop_types=poi_types)
             )
+        if event_cells:
+            jobs.append(
+                lambda: self.fetch_cells(
+                    event_cells, cell_level=EVENT_CELL_LEVEL, drop_types=EVENT_TYPES
+                )
+            )
+        pois: list[dict[str, Any]] = []
+        if len(jobs) == 1:
+            pois = jobs[0]()
+        elif jobs:
+            with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+                for fut in as_completed([pool.submit(fn) for fn in jobs]):
+                    pois = self._merge_unique(pois, fut.result())
         ne, sw = bbox_from_radius(lat, lng, radius_m)
         out: list[dict[str, Any]] = []
         for poi in pois:
